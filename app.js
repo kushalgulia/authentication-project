@@ -6,7 +6,8 @@ const mongoose = require('mongoose')
 const session = require('express-session')
 const passport = require('passport')
 const passportLocalMongoose = require('passport-local-mongoose')
-
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const findOrCreate = require('mongoose-findorcreate')
 
 const port = 3000
 const app = express()
@@ -29,21 +30,40 @@ app.use(passport.session())
 
 
 
-mongoose.connect('mongodb://localhost:27017/userDB');
-
+mongoose.connect('mongodb://localhost:27017/userDB')
 const userSchema = new mongoose.Schema({
   email: String,
-  password: String
+  password: String,
+  googleId: String,
+  secret: String
 })
-
 userSchema.plugin(passportLocalMongoose)
-
-const User = new mongoose.model('user', userSchema);
+userSchema.plugin(findOrCreate)
+const User = new mongoose.model('user', userSchema)
 
 passport.use(User.createStrategy());
-passport.serializeUser(User.serializeUser());
-passport.deserializeUser(User.deserializeUser());
-
+passport.use(new GoogleStrategy({
+    clientID: process.env.CLIENT_ID,
+    clientSecret: process.env.CLIENT_SECRET,
+    callbackURL: "http://localhost:3000/auth/google/secrets"
+  },
+  function(accessToken, refreshToken, profile, cb) {
+    User.findOrCreate({
+      googleId: profile.id
+    }, function(err, user) {
+      return cb(err, user);
+    });
+  }
+));
+passport.serializeUser((user, done) => {
+  //user.id is not profile id. it is id that created by the database
+  done(null, user.id)
+})
+passport.deserializeUser((id, done) => {
+  User.findById(id).then((user) => {
+    done(null, user)
+  })
+})
 
 app.route('/')
   .get((req, res) => {
@@ -51,14 +71,34 @@ app.route('/')
   })
 
 // home route
+app.get('/auth/google',
+  passport.authenticate('google', {
+    scope: ['profile']
+  })
+)
+app.get('/auth/google/secrets',
+  passport.authenticate('google', {
+    failureRedirect: '/login'
+  }),
+  function(req, res) {
+    res.redirect('/secrets');
+  })
 
 app.route('/secrets')
   .get((req, res) => {
-    if (req.isAuthenticated()) {
-      res.render('secrets')
-    } else {
-      res.redirect('/login')
-    }
+    User.find({
+      'secrets': {
+        $ne: null
+      }
+    }, (err, foundUsers) => {
+      if (err) {
+        console.log(err);
+      } else {
+        res.render('secrets', {
+          userWithSecrets: foundUsers
+        })
+      }
+    })
   })
 
 
@@ -112,6 +152,29 @@ app.get('/logout', (req, res) => {
       console.log(err);
     } else {
       res.redirect('/');
+    }
+  })
+})
+
+app.get('/submit', (req, res) => {
+  if (req.isAuthenticated()) {
+    res.render('submit')
+  } else {
+    res.redirect('/login')
+  }
+})
+
+app.post('/submit', (req, res) => {
+  const submittedSecret = req.body.secret;
+  const id = (req.user.id);
+  console.log(req.user.id);
+  User.findById(id, (err, user) => {
+    if (err) {
+      console.log(err);
+    } else {
+      user.secret = req.body.secret;
+      user.save(() =>
+        res.redirect('/secrets'))
     }
   })
 })
